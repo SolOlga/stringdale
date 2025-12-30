@@ -19,7 +19,7 @@ from anthropic import Anthropic
 
 from openai import AsyncOpenAI
 
-# %% ../nbs/027_mcp.ipynb 27
+# %% ../nbs/027_mcp.ipynb 45
 def mcp_tool_executor_factory(mcp_client):
     """
     Factory function that creates an execute_mcp_tool function bound to a specific mcp_client.

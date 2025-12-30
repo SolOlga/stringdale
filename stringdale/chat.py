@@ -2,10 +2,10 @@
 
 # %% auto 0
 __all__ = ['logger', 'tools_client', 'json_client', 'raw_client', 'tools_anthropic_client', 'raw_anthropic_client',
-           'json_anthropic_client', 'complete_open_ai', 'complete_anthropic', 'complete_raw', 'complete',
-           'answer_question', 'choose', 'choose_many', 'clean_model', 'structured_output', 'User',
-           'function_to_input_description', 'description_to_model', 'function_to_input_model', 'call_tools', 'Chat',
-           'image_to_text', 'speech_to_text']
+           'json_anthropic_client', 'complete_open_ai', 'mcp_tools_to_anthropic_kwargs', 'complete_anthropic',
+           'complete_raw', 'complete', 'answer_question', 'choose', 'choose_many', 'clean_model', 'structured_output',
+           'User', 'function_to_input_description', 'description_to_model', 'function_to_input_model', 'call_tools',
+           'Chat', 'image_to_text', 'speech_to_text']
 
 # %% ../nbs/024_llms.ipynb 4
 from .core import get_git_root, load_env, checkLogs,  json_render,json_undeclared_vars,disk_cache
@@ -95,8 +95,9 @@ def json_anthropic_client():
     return anthropic_client
 
 
-# %% ../nbs/024_llms.ipynb 24
-# Provider-specific completion function for open ai
+# %% ../nbs/024_llms.ipynb 15
+# TODO collapse mcp tools and raw modes
+
 @disk_cache.cache(ignore=['response_model'])
 async def complete_open_ai(model, messages, response_model=None, response_schema=None, mode='json', seed=42, **kwargs):
     """
@@ -189,182 +190,125 @@ async def complete_open_ai(model, messages, response_model=None, response_schema
     return response.model_dump_json(), usage
 
 
-# %% ../nbs/024_llms.ipynb 27
-async def _complete_anthropic_raw(model, messages, max_tokens, **kwargs):
+# %% ../nbs/024_llms.ipynb 23
+def mcp_tools_to_anthropic_kwargs(mcp_tools):
     """
-    Wrapper function that translates OpenAI-style API calls to Anthropic's API format
-    """
-    client = raw_anthropic_client()
-    
-    # Extract system message (first system message), rest as regular messages
-    system = None
-    stripped = []
-    for m in messages:
-        role = m.get("role")
-        content = m.get("content", "")
-        if role == "system" and system is None:
-            system = content
-        else:
-            stripped.append({"role": role, "content": content})
-    
-    # Call Anthropic API
-    resp = await client.messages.create(
-        model=model,
-        system=system if system else "",  # Anthropic allows empty string for system
-        messages=stripped,
-        max_tokens=max_tokens,
-        **kwargs
-    )
-    
-    # Aggregate text blocks from response
-    parts = []
-    for block in (resp.content or []):
-        if getattr(block, "type", None) == "text":
-            parts.append(block.text)
-    content = "\n".join(parts)
-    
-    # Extract usage information
-    usage = {
-        "input_tokens": getattr(resp.usage, "input_tokens", 0),
-        "output_tokens": getattr(resp.usage, "output_tokens", 0)
-    }
-    
-    return content, usage
-
-# %% ../nbs/024_llms.ipynb 28
-async def _complete_anthropic_mcp_tools(model, messages, mcp_tools, max_tokens, **kwargs):
-    """
-    Handle Anthropic completion with MCP tools.
+    Convert MCP tools to Anthropic's tools parameter format.
     
     Args:
-        model: Model name
-        messages: List of message dicts
-        mcp_tools: List of MCP Tool objects
-        max_tokens: Max tokens for completion
-        **kwargs: Additional arguments passed to Anthropic API
+        mcp_tools: List of MCP Tool objects (can be empty)
         
     Returns:
-        Tuple of (result, usage) where:
-        - result: Dict with 'name' and 'input' if tool selected, or text string if no tool
-        - usage: Dict with input_tokens and output_tokens
+        Dict with 'tools' key containing Anthropic-formatted tools, or empty dict if no tools
     """
-    client = raw_anthropic_client()
+    if not mcp_tools:
+        return {}
     
-    # Convert MCP tools to Anthropic format
     anthropic_tools = [{
         "name": tool.name,
         "description": tool.description,
         "input_schema": tool.inputSchema
     } for tool in mcp_tools]
     
-    # Filter out parameters that Anthropic doesn't support
-    anthropic_kwargs = {k: v for k, v in kwargs.items() 
-                        if k not in ['stop', 'seed']}
-    
-    # Call Anthropic API with tools
-    response = await client.messages.create(
-        model=model,
-        max_tokens=max_tokens,
-        messages=messages,
-        tools=anthropic_tools,
-        **anthropic_kwargs
-    )
-    
-        # Parse response content blocks
-    text_parts = []
-    tool_use_blocks = []
-    
-    for block in (response.content or []):
-        if getattr(block, "type", None) == "text":
-            text_parts.append(block.text)
-        elif getattr(block, "type", None) == "tool_use":
-            # Extract tool use information
-            tool_use_blocks.append({
-                "name": block.name,
-                "input": block.input,  # Already a dict, no need to parse JSON
-                "id": getattr(block, "id", None)  # Include id if available
-            })
-    
-    # Extract usage information
-    usage = {
-        "input_tokens": getattr(response.usage, "input_tokens", 0),
-        "output_tokens": getattr(response.usage, "output_tokens", 0)
-    }
-    
-    # Return consistent structure: always a dict with 'text' and 'tool_calls'
-    result = {
-        "text": "\n".join(text_parts) if text_parts else None
-            }
-    if tool_use_blocks:
-        result["tool_calls"] = tool_use_blocks
-    
-    return result, usage
+    return {"tools": anthropic_tools}
 
-# %% ../nbs/024_llms.ipynb 29
+# %% ../nbs/024_llms.ipynb 24
 @disk_cache.cache(ignore=['response_model'])
 async def complete_anthropic(model, messages, response_model=None, response_schema=None, mode='json', seed=42, **kwargs):
     """
     Anthropic-specific completion handler.
     Chooses between clients based on mode and runs the completion.
     """
+    def _extract_usage(usage_obj):
+        """Extract usage information from Anthropic usage object"""
+        return {
+            "input_tokens": getattr(usage_obj, "input_tokens", 0),
+            "output_tokens": getattr(usage_obj, "output_tokens", 0)
+        }
+    
     max_tokens = kwargs.get('max_tokens', 1024)
+    # Filter out unsupported Anthropic parameters
+    # Anthropic doesn't support 'stop' or 'seed' parameters
+    anthropic_kwargs = {k: v for k, v in kwargs.items() 
+                        if k not in ['stop', 'seed', 'print_prompt', 'mcp_tools']}
+    
     if mode == 'json':
         client = json_anthropic_client()
         response, completion = await client.chat.completions.create_with_completion(
             model=model,
             messages=messages,
             response_model=response_model,
-            #seed=seed,
             max_tokens=max_tokens,
-            **kwargs
+            **anthropic_kwargs
         )
-        usage = {
-            "input_tokens": getattr(completion.usage, "input_tokens", 0),
-            "output_tokens": getattr(completion.usage, "output_tokens", 0)
-        }
-        return response.model_dump_json(), usage
-    elif mode == 'mcp_tools':
-        if 'mcp_tools' not in kwargs or not kwargs['mcp_tools']:
-            raise ValueError("No MCP tools provided; 'mcp_tools' is required and cannot be empty in 'mcp_tools' mode.")
-        mcp_tools = kwargs.pop('mcp_tools')
-        return await _complete_anthropic_mcp_tools(
-            model=model,
-            messages=messages,
-            mcp_tools=mcp_tools,
-            max_tokens=max_tokens,
-            **kwargs
-        )
-    elif mode == 'tools':
-        client = tools_anthropic_client()
+        return response.model_dump_json(), _extract_usage(completion.usage)
+
+    elif mode == 'mcp_tools' or mode == 'raw':
+        # Unified path: handle both raw (no tools) and mcp_tools cases
+        client = raw_anthropic_client()
         
-        ###### This is with completion #######
-        # Extract union from wrapper
-        actual_response_model = response_model.model_fields['tool_input'].annotation
-        response = await client.chat.completions.create(
+        # Get MCP tools from kwargs (default to empty list for 'raw' mode)
+        mcp_tools = kwargs.pop('mcp_tools', [])
+        
+        # Convert MCP tools to Anthropic format
+        tools_kwargs = mcp_tools_to_anthropic_kwargs(mcp_tools)
+        
+        # Extract system message (first system message), rest as regular messages
+        system = None
+        stripped = []
+        for m in messages:
+            role = m.get("role")
+            content = m.get("content", "")
+            if role == "system" and system is None:
+                system = content
+            else:
+                stripped.append({"role": role, "content": content})
+        
+        # Call Anthropic API
+        response = await client.messages.create(
             model=model,
-            messages=messages,
-            response_model=actual_response_model,
+            system=system if system else "",  # Anthropic allows empty string for system
+            messages=stripped,
             max_tokens=max_tokens,
-            **kwargs
+            **tools_kwargs,  # Includes tools if any
+            **anthropic_kwargs
         )
-        usage = {"input_tokens": 0, "output_tokens": 0}
-        ########
-        wrapped = response_model(tool_input=response)
-        return wrapped.model_dump_json(), usage
-    elif mode == 'raw':
-        content, usage = await _complete_anthropic_raw(
-            model=model,
-            messages=messages,
-            max_tokens=max_tokens,
-            **kwargs
-        )
-        return content, usage
+        
+        # Parse response content blocks
+        text_parts = []
+        tool_use_blocks = []
+        
+        for block in (response.content or []):
+            if getattr(block, "type", None) == "text":
+                text_parts.append(block.text)
+            elif getattr(block, "type", None) == "tool_use":
+                # Extract tool use information
+                tool_use_blocks.append({
+                    "name": block.name,
+                    "input": block.input,  # Already a dict, no need to parse JSON
+                    "id": getattr(block, "id", None)  # Include id if available
+                })
+        
+        # Extract usage information
+        usage = _extract_usage(response.usage)
+        
+        # Return consistent structure: always a dict with 'text' and optionally 'tool_calls'
+        result = {
+            "text": "\n".join(text_parts) if text_parts else None
+        }
+        if tool_use_blocks:
+            result["tool_calls"] = tool_use_blocks
+        
+        # For backward compatibility with 'raw' mode: if no tools and no tool_calls, return just text string
+        if mode == 'raw' and not tool_use_blocks and not mcp_tools:
+            return result["text"], usage
+        
+        return result, usage
+    
     else:
         raise ValueError(f"Invalid mode: {mode}")
-    
 
-
-# %% ../nbs/024_llms.ipynb 42
+# %% ../nbs/024_llms.ipynb 33
 async def complete_raw(model, messages, response_model=None, response_schema=None, mode='json', seed=42, provider=None, **kwargs):
     """
     This function is used to complete a chat completion with instructor without having basemodels as input or output.
@@ -442,13 +386,13 @@ async def complete(model, messages, response_model, mode='json', print_prompt=Fa
         else:
             return response_model.model_validate_json(response), usage
 
-# %% ../nbs/024_llms.ipynb 49
+# %% ../nbs/024_llms.ipynb 40
 async def answer_question(model,messages,**api_kwargs):
     res,usage = await complete(model,messages,response_model=None,mode='raw',**api_kwargs)
     return res,usage
 
 
-# %% ../nbs/024_llms.ipynb 53
+# %% ../nbs/024_llms.ipynb 44
 async def choose(model,messages,choices,**api_kwargs):
     class Choice(BaseModel):
         choice: Literal[tuple(choices)]
@@ -456,7 +400,7 @@ async def choose(model,messages,choices,**api_kwargs):
     return res.choice,usage
 
 
-# %% ../nbs/024_llms.ipynb 57
+# %% ../nbs/024_llms.ipynb 48
 async def choose_many(model,messages,choices,**api_kwargs):
     class Choice(BaseModel):
         choice: Literal[tuple(choices)]
@@ -467,7 +411,7 @@ async def choose_many(model,messages,choices,**api_kwargs):
     return [c.choice for c in res.choices],usage
 
 
-# %% ../nbs/024_llms.ipynb 61
+# %% ../nbs/024_llms.ipynb 52
 def clean_model(model: Type[sqlmodel.SQLModel], name: Optional[str] = None) -> Type[BaseModel]:
     """Convert an SQLModel to a Pydantic BaseModel.
     used to clean up the output for the LLM
@@ -489,7 +433,7 @@ def clean_model(model: Type[sqlmodel.SQLModel], name: Optional[str] = None) -> T
     # Create and return new Pydantic model
     return create_model(model_name, **fields)
 
-# %% ../nbs/024_llms.ipynb 62
+# %% ../nbs/024_llms.ipynb 53
 async def structured_output(model,messages,output_schema,as_json=False,**api_kwargs):
 
     is_sqlmodel = isinstance(output_schema,type) and issubclass(output_schema,sqlmodel.SQLModel)
@@ -507,7 +451,7 @@ async def structured_output(model,messages,output_schema,as_json=False,**api_kwa
     return res,usage
 
 
-# %% ../nbs/024_llms.ipynb 66
+# %% ../nbs/024_llms.ipynb 57
 class User(sqlmodel.SQLModel, table=False):
     id: Optional[int] = sqlmodel.Field(default=None, primary_key=True)
     name: Optional[str] = sqlmodel.Field(default=None)
@@ -516,11 +460,11 @@ class User(sqlmodel.SQLModel, table=False):
 
 
 
-# %% ../nbs/024_llms.ipynb 70
+# %% ../nbs/024_llms.ipynb 61
 import docstring_parser 
 
 
-# %% ../nbs/024_llms.ipynb 71
+# %% ../nbs/024_llms.ipynb 62
 def function_to_input_description(func: Callable) -> Dict[str, Any]:
     """Extract parameter information from a function's signature and docstring.
     
@@ -596,7 +540,7 @@ def description_to_model(desc: Dict[str, Any], model_name: Optional[str] = None)
 
 
 
-# %% ../nbs/024_llms.ipynb 74
+# %% ../nbs/024_llms.ipynb 65
 def function_to_input_model(func: Callable,name:str,descriminator_field:str="tool_name") -> Type[BaseModel]:
     """Convert a function to a Pydantic input model.
     
@@ -615,7 +559,7 @@ def function_to_input_model(func: Callable,name:str,descriminator_field:str="too
     return description_to_model(desc)
 
 
-# %% ../nbs/024_llms.ipynb 75
+# %% ../nbs/024_llms.ipynb 66
 async def call_tools(
     model: str,
     messages: List[Dict[str, str]], 
@@ -679,12 +623,12 @@ async def call_tools(
     return result,usage
     
 
-# %% ../nbs/024_llms.ipynb 82
+# %% ../nbs/024_llms.ipynb 73
 from copy import deepcopy,copy
 from pprint import pformat,pprint
 
 
-# %% ../nbs/024_llms.ipynb 83
+# %% ../nbs/024_llms.ipynb 74
 class Chat:
     """A Chat objects the renders a prompt and calls an LLM. Currently supporting openai models.
     
@@ -927,7 +871,7 @@ class Chat:
         """Same as string representation."""
         return self.__str__()
 
-# %% ../nbs/024_llms.ipynb 118
+# %% ../nbs/024_llms.ipynb 109
 @disk_cache.cache
 async def image_to_text(path:str,model:str="gpt-4o-mini",url=False):
     """
@@ -971,11 +915,11 @@ async def image_to_text(path:str,model:str="gpt-4o-mini",url=False):
     }
 
 
-# %% ../nbs/024_llms.ipynb 124
+# %% ../nbs/024_llms.ipynb 115
 from instructor.multimodal import Audio
 import openai
 
-# %% ../nbs/024_llms.ipynb 125
+# %% ../nbs/024_llms.ipynb 116
 @disk_cache.cache
 async def speech_to_text(audio_path: str, model: str = "whisper-1") -> Dict[str,str]:
     """Extract text from an audio file using OpenAI's Whisper model.
