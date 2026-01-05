@@ -2,10 +2,10 @@
 
 # %% auto 0
 __all__ = ['logger', 'tools_client', 'json_client', 'raw_client', 'tools_anthropic_client', 'raw_anthropic_client',
-           'json_anthropic_client', 'complete_open_ai', 'mcp_tools_to_anthropic_kwargs', 'complete_anthropic',
-           'complete_raw', 'complete', 'answer_question', 'choose', 'choose_many', 'clean_model', 'structured_output',
-           'User', 'function_to_input_description', 'description_to_model', 'function_to_input_model', 'call_tools',
-           'Chat', 'image_to_text', 'speech_to_text']
+           'json_anthropic_client', 'complete_open_ai', 'mcp_tools_to_openai_kwargs', 'mcp_tools_to_anthropic_kwargs',
+           'complete_anthropic', 'complete_raw', 'complete', 'answer_question', 'choose', 'choose_many', 'clean_model',
+           'structured_output', 'User', 'function_to_input_description', 'description_to_model',
+           'function_to_input_model', 'call_tools', 'Chat', 'image_to_text', 'speech_to_text']
 
 # %% ../nbs/024_llms.ipynb 4
 from .core import get_git_root, load_env, checkLogs,  json_render,json_undeclared_vars,disk_cache
@@ -190,7 +190,124 @@ async def complete_open_ai(model, messages, response_model=None, response_schema
     return response.model_dump_json(), usage
 
 
-# %% ../nbs/024_llms.ipynb 23
+# %% ../nbs/024_llms.ipynb 16
+def mcp_tools_to_openai_kwargs(mcp_tools):
+    """
+    Convert MCP tools to OpenAI's tools parameter format.
+    
+    Args:
+        mcp_tools: List of MCP Tool objects (can be empty)
+        
+    Returns:
+        Dict with 'tools' key containing OpenAI-formatted tools, or empty dict if no tools
+    """
+    if not mcp_tools:
+        return {}
+    
+    openai_tools = [{
+        "type": "function",
+        "function": {
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.inputSchema
+        }
+    } for tool in mcp_tools]
+    
+    return {"tools": openai_tools}
+
+
+# %% ../nbs/024_llms.ipynb 17
+@disk_cache.cache(ignore=['response_model'])
+async def complete_open_ai(model, messages, response_model=None, response_schema=None, mode='json', seed=42, **kwargs):
+    """
+    OpenAI-specific completion handler.
+    Chooses between clients based on mode and runs the completion.
+    """
+    if mode == 'json':
+        client = json_client()
+        response, completion = await client.chat.completions.create_with_completion(
+            model=model,
+            messages=messages,
+            response_model=response_model,
+            seed=seed,
+            **kwargs
+        )
+        usage = {
+            "input_tokens": completion.usage.prompt_tokens,
+            "output_tokens": completion.usage.completion_tokens
+        }
+        return response.model_dump_json(), usage
+
+    elif mode == 'tools':
+        client = tools_client()
+        response, completion = await client.chat.completions.create_with_completion(
+            model=model,
+            messages=messages,
+            response_model=response_model,
+            seed=seed,
+            **kwargs
+        )
+        usage = {
+            "input_tokens": completion.usage.prompt_tokens,
+            "output_tokens": completion.usage.completion_tokens
+        }
+        return response.model_dump_json(), usage
+
+    elif mode == 'mcp_tools' or mode == 'raw':
+        # Unified path: handle both raw (no tools) and mcp_tools cases
+        client = raw_client()
+        
+        # Get MCP tools from kwargs (default to empty list for 'raw' mode)
+        mcp_tools = kwargs.pop('mcp_tools', [])
+        
+        # Convert MCP tools to OpenAI format
+        tools_kwargs = mcp_tools_to_openai_kwargs(mcp_tools)
+        
+        # Filter out unsupported parameters if needed
+        openai_kwargs = {k: v for k, v in kwargs.items() 
+                        if k not in ['print_prompt']}
+        
+        # Call OpenAI API
+        completion = await client.chat.completions.create(
+            model=model,
+            messages=messages,
+            seed=seed,
+            **tools_kwargs,  # Includes tools if any
+            **openai_kwargs
+        )
+        
+        # Extract usage information
+        usage = {
+            "input_tokens": completion.usage.prompt_tokens,
+            "output_tokens": completion.usage.completion_tokens
+        }
+        
+        # Parse response into unified format
+        message = completion.choices[0].message
+        result = {
+            "text": message.content if message.content else None
+        }
+        
+        # Extract tool calls if any
+        if message.tool_calls:
+            result["tool_calls"] = []
+            for tool_call in message.tool_calls:
+                result["tool_calls"].append({
+                    "name": tool_call.function.name,
+                    "input": json.loads(tool_call.function.arguments),
+                    "id": tool_call.id
+                })
+        
+        # For backward compatibility with 'raw' mode: if no tools and no tool_calls, return just text string
+        if mode == 'raw' and not result.get("tool_calls") and not mcp_tools:
+            return result["text"], usage
+        
+        return result, usage
+    
+    else:
+        raise ValueError(f"Invalid mode: {mode}")
+
+# %% ../nbs/024_llms.ipynb 22
 def mcp_tools_to_anthropic_kwargs(mcp_tools):
     """
     Convert MCP tools to Anthropic's tools parameter format.
@@ -212,7 +329,7 @@ def mcp_tools_to_anthropic_kwargs(mcp_tools):
     
     return {"tools": anthropic_tools}
 
-# %% ../nbs/024_llms.ipynb 24
+# %% ../nbs/024_llms.ipynb 23
 @disk_cache.cache(ignore=['response_model'])
 async def complete_anthropic(model, messages, response_model=None, response_schema=None, mode='json', seed=42, **kwargs):
     """
@@ -308,7 +425,7 @@ async def complete_anthropic(model, messages, response_model=None, response_sche
     else:
         raise ValueError(f"Invalid mode: {mode}")
 
-# %% ../nbs/024_llms.ipynb 33
+# %% ../nbs/024_llms.ipynb 31
 async def complete_raw(model, messages, response_model=None, response_schema=None, mode='json', seed=42, provider=None, **kwargs):
     """
     This function is used to complete a chat completion with instructor without having basemodels as input or output.
@@ -386,13 +503,13 @@ async def complete(model, messages, response_model, mode='json', print_prompt=Fa
         else:
             return response_model.model_validate_json(response), usage
 
-# %% ../nbs/024_llms.ipynb 40
+# %% ../nbs/024_llms.ipynb 38
 async def answer_question(model,messages,**api_kwargs):
     res,usage = await complete(model,messages,response_model=None,mode='raw',**api_kwargs)
     return res,usage
 
 
-# %% ../nbs/024_llms.ipynb 44
+# %% ../nbs/024_llms.ipynb 42
 async def choose(model,messages,choices,**api_kwargs):
     class Choice(BaseModel):
         choice: Literal[tuple(choices)]
@@ -400,7 +517,7 @@ async def choose(model,messages,choices,**api_kwargs):
     return res.choice,usage
 
 
-# %% ../nbs/024_llms.ipynb 48
+# %% ../nbs/024_llms.ipynb 46
 async def choose_many(model,messages,choices,**api_kwargs):
     class Choice(BaseModel):
         choice: Literal[tuple(choices)]
@@ -411,7 +528,7 @@ async def choose_many(model,messages,choices,**api_kwargs):
     return [c.choice for c in res.choices],usage
 
 
-# %% ../nbs/024_llms.ipynb 52
+# %% ../nbs/024_llms.ipynb 50
 def clean_model(model: Type[sqlmodel.SQLModel], name: Optional[str] = None) -> Type[BaseModel]:
     """Convert an SQLModel to a Pydantic BaseModel.
     used to clean up the output for the LLM
@@ -433,7 +550,7 @@ def clean_model(model: Type[sqlmodel.SQLModel], name: Optional[str] = None) -> T
     # Create and return new Pydantic model
     return create_model(model_name, **fields)
 
-# %% ../nbs/024_llms.ipynb 53
+# %% ../nbs/024_llms.ipynb 51
 async def structured_output(model,messages,output_schema,as_json=False,**api_kwargs):
 
     is_sqlmodel = isinstance(output_schema,type) and issubclass(output_schema,sqlmodel.SQLModel)
@@ -451,7 +568,7 @@ async def structured_output(model,messages,output_schema,as_json=False,**api_kwa
     return res,usage
 
 
-# %% ../nbs/024_llms.ipynb 57
+# %% ../nbs/024_llms.ipynb 55
 class User(sqlmodel.SQLModel, table=False):
     id: Optional[int] = sqlmodel.Field(default=None, primary_key=True)
     name: Optional[str] = sqlmodel.Field(default=None)
@@ -460,11 +577,11 @@ class User(sqlmodel.SQLModel, table=False):
 
 
 
-# %% ../nbs/024_llms.ipynb 61
+# %% ../nbs/024_llms.ipynb 59
 import docstring_parser 
 
 
-# %% ../nbs/024_llms.ipynb 62
+# %% ../nbs/024_llms.ipynb 60
 def function_to_input_description(func: Callable) -> Dict[str, Any]:
     """Extract parameter information from a function's signature and docstring.
     
@@ -540,7 +657,7 @@ def description_to_model(desc: Dict[str, Any], model_name: Optional[str] = None)
 
 
 
-# %% ../nbs/024_llms.ipynb 65
+# %% ../nbs/024_llms.ipynb 63
 def function_to_input_model(func: Callable,name:str,descriminator_field:str="tool_name") -> Type[BaseModel]:
     """Convert a function to a Pydantic input model.
     
@@ -559,7 +676,7 @@ def function_to_input_model(func: Callable,name:str,descriminator_field:str="too
     return description_to_model(desc)
 
 
-# %% ../nbs/024_llms.ipynb 66
+# %% ../nbs/024_llms.ipynb 64
 async def call_tools(
     model: str,
     messages: List[Dict[str, str]], 
@@ -623,12 +740,12 @@ async def call_tools(
     return result,usage
     
 
-# %% ../nbs/024_llms.ipynb 73
+# %% ../nbs/024_llms.ipynb 68
 from copy import deepcopy,copy
 from pprint import pformat,pprint
 
 
-# %% ../nbs/024_llms.ipynb 74
+# %% ../nbs/024_llms.ipynb 69
 class Chat:
     """A Chat objects the renders a prompt and calls an LLM. Currently supporting openai models.
     
@@ -871,7 +988,7 @@ class Chat:
         """Same as string representation."""
         return self.__str__()
 
-# %% ../nbs/024_llms.ipynb 109
+# %% ../nbs/024_llms.ipynb 95
 @disk_cache.cache
 async def image_to_text(path:str,model:str="gpt-4o-mini",url=False):
     """
@@ -915,11 +1032,11 @@ async def image_to_text(path:str,model:str="gpt-4o-mini",url=False):
     }
 
 
-# %% ../nbs/024_llms.ipynb 115
+# %% ../nbs/024_llms.ipynb 101
 from instructor.multimodal import Audio
 import openai
 
-# %% ../nbs/024_llms.ipynb 116
+# %% ../nbs/024_llms.ipynb 102
 @disk_cache.cache
 async def speech_to_text(audio_path: str, model: str = "whisper-1") -> Dict[str,str]:
     """Extract text from an audio file using OpenAI's Whisper model.

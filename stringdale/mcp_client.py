@@ -10,16 +10,16 @@ import json
 import os
 from typing import Tuple, List, Dict, Any, Optional
 from contextlib import asynccontextmanager,AsyncExitStack
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
-from mcp.client.sse import sse_client 
+
+from fastmcp import Client, FastMCP
+from fastmcp.client.transports import StreamableHttpTransport, PythonStdioTransport ,StdioTransport 
 
 
 from anthropic import Anthropic
 
 from openai import AsyncOpenAI
 
-# %% ../nbs/027_mcp.ipynb 45
+# %% ../nbs/027_mcp.ipynb 27
 def mcp_tool_executor_factory(mcp_client):
     """
     Factory function that creates an execute_mcp_tool function bound to a specific mcp_client.
