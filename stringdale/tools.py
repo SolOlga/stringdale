@@ -3,7 +3,7 @@
 # %% auto 0
 __all__ = ['logger', 'runner_imports', 'wikipedia_search', 'google_search', 'run_python_code']
 
-# %% ../nbs/026_tools.ipynb 5
+# %% ../nbs/026_tools.ipynb 6
 import os
 from pathlib import Path
 from copy import deepcopy
@@ -28,10 +28,10 @@ from .core import disk_cache
 
 
 
-# %% ../nbs/026_tools.ipynb 7
+# %% ../nbs/026_tools.ipynb 8
 import wikipedia
 
-# %% ../nbs/026_tools.ipynb 8
+# %% ../nbs/026_tools.ipynb 9
 @disk_cache.cache
 def wikipedia_search(q:str):
     """
@@ -47,11 +47,11 @@ def wikipedia_search(q:str):
 
     return wikipedia.page(q).content
 
-# %% ../nbs/026_tools.ipynb 12
+# %% ../nbs/026_tools.ipynb 13
 from serpapi import SerpApiClient
 
 
-# %% ../nbs/026_tools.ipynb 14
+# %% ../nbs/026_tools.ipynb 15
 @disk_cache.cache
 def google_search(q:str,location:str='Austin, Texas',engine:str='google_scholar'):
     """Search the web for information using various search engines.
@@ -73,10 +73,10 @@ def google_search(q:str,location:str='Austin, Texas',engine:str='google_scholar'
     """
     return SerpApiClient({'q':q,'location':location,'engine':engine,'serp_api_key':get_serper_api_key()}).get_dict()
 
-# %% ../nbs/026_tools.ipynb 17
+# %% ../nbs/026_tools.ipynb 18
 from smolagents.local_python_executor import LocalPythonExecutor
 
-# %% ../nbs/026_tools.ipynb 18
+# %% ../nbs/026_tools.ipynb 19
 runner_imports = [
     "collections",
     "datetime",

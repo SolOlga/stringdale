@@ -477,7 +477,6 @@ class Chat:
         output_schema: Optional[BaseModel] = None,
         as_json: Optional[bool] = False,
         tools: Optional[Dict[str,Callable]] = None,
-        mcp_tools: Optional[Dict[str,Callable]] = None,
         call_function: Optional[bool] = False,
         choices: Optional[Enum] = None,
         multi_choice: Optional[bool] = False,
@@ -493,7 +492,7 @@ class Chat:
         self.messages = deepcopy(messages)
         self.output_schema = output_schema
         self.as_json = as_json
-        self.mcp_tools = mcp_tools
+        self.tools = tools
         self.call_function = call_function
         self.choices = choices
         self.multi_choice = multi_choice
@@ -533,7 +532,6 @@ class Chat:
             output_schema=self.output_schema,
             as_json=self.as_json,
             tools=self.tools,
-            mcp_tools=self.mcp_tools,
             call_function=self.call_function,
             choices=self.choices,
             multi_choice=self.multi_choice,
@@ -565,7 +563,7 @@ class Chat:
         messages = kwargs.get("messages", self.messages)
         output_schema = kwargs.get("output_schema", self.output_schema)
         as_json = kwargs.get("as_json", self.as_json)
-        mcp_tools = kwargs.get("mcp_tools", self.mcp_tools)
+        tools = kwargs.get("tools", self.tools)
         call_function = kwargs.get("call_function", self.call_function)
         choices = kwargs.get("choices", self.choices)
         multi_choice = kwargs.get("multi_choice", self.multi_choice)
@@ -612,10 +610,10 @@ class Chat:
                 res,usage = await choose(choices=choices,**completion_kwargs)
         elif output_schema:
             res,usage = await structured_output(output_schema=output_schema,as_json=as_json,**completion_kwargs)
-        elif mcp_tools:
+        elif tools:
             res, usage = await complete(
                 mode='mcp_tools',
-                mcp_tools=mcp_tools,
+                mcp_tools=tools,
                 response_model=None,
                 **completion_kwargs
             )
@@ -643,7 +641,10 @@ class Chat:
             parts.append(f"output_schema={self.output_schema.__name__}")
         
         if self.tools:
-            parts.append(f"""tools={",".join(self.tools.keys())}""")
+            # tools is now a list of Tool objects, extract their names
+            tool_names = [tool.name for tool in self.tools]
+            parts.append(f"""tools={",".join(tool_names)}""")
+            #parts.append(f"""tools={",".join(self.tools.keys())}""")
         if self.call_function:
             parts.append(f"call_function={self.call_function}")
             
@@ -686,7 +687,7 @@ class Chat:
         """Same as string representation."""
         return self.__str__()
 
-# %% ../nbs/024_llms.ipynb 80
+# %% ../nbs/024_llms.ipynb 82
 @disk_cache.cache
 async def image_to_text(path:str,model:str="gpt-4o-mini",url=False):
     """
@@ -730,11 +731,11 @@ async def image_to_text(path:str,model:str="gpt-4o-mini",url=False):
     }
 
 
-# %% ../nbs/024_llms.ipynb 86
+# %% ../nbs/024_llms.ipynb 88
 from instructor.multimodal import Audio
 import openai
 
-# %% ../nbs/024_llms.ipynb 87
+# %% ../nbs/024_llms.ipynb 89
 @disk_cache.cache
 async def speech_to_text(audio_path: str, model: str = "whisper-1") -> Dict[str,str]:
     """Extract text from an audio file using OpenAI's Whisper model.
