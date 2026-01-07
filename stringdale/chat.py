@@ -732,7 +732,7 @@ class Chat:
         """Same as string representation."""
         return self.__str__()
 
-# %% ../nbs/024_llms.ipynb 90
+# %% ../nbs/024_llms.ipynb 89
 @disk_cache.cache
 async def image_to_text(path:str,model:str="gpt-4o-mini",url=False):
     """
@@ -776,11 +776,11 @@ async def image_to_text(path:str,model:str="gpt-4o-mini",url=False):
     }
 
 
-# %% ../nbs/024_llms.ipynb 98
+# %% ../nbs/024_llms.ipynb 97
 from instructor.multimodal import Audio
 import openai
 
-# %% ../nbs/024_llms.ipynb 99
+# %% ../nbs/024_llms.ipynb 98
 @disk_cache.cache
 async def speech_to_text(audio_path: str, model: str = "whisper-1") -> Dict[str, str]:
     """Extract text from an audio file using OpenAI's Whisper model.
